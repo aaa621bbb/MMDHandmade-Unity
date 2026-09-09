@@ -134,16 +134,20 @@ Assets/
 
 ## 5.5 Phase 2 · 女巨人城·踩小人（Android）
 
-在 Phase 1 播放器之上叠加的一个微缩玩法（不删 Phase 1）。用你放入的任意 MMD 模型当**女巨人**，
-在一座程序化生成的小城里踩建筑、踩小人，单指拖动移动、轻点/按钮踩踏，双指捏合缩放相机，计分可重开。
+在 Phase 1 播放器之上叠加的**沙盒玩法**（不删 Phase 1）。玩家是比女巨人一根脚趾还小的**程序小人**，
+在**微缩城市**里跑位躲藏；女巨人（你放进手机文件夹的 `.pmx` 模型，**运行时导入、可随时更换**）会
+**追你**并试着用脚掌踩你。默认被踩到=击倒并重生安全点；开启**无敌模式**后被踩到毫发无损。
 
-- **模块**：`Assets/Scripts/MMDGiantGame/`（命名空间 `MMDGiantGame`），只引用 Phase 1 公开 API，不改其实现。
-- **场景**：`Assets/Scenes/MMDGiantSandbox.unity`，用 **Tools ▸ MMD Giant Game ▸ Build MMDGiantSandbox Scene** 生成。
-- **依赖**：无额外第三方包；仍需 Built-in RP、旧输入（Active Input Handling 含 Old/Both）。
-- **无素材先跑**：不存在模型时自动用占位胶囊，先让整套踩踏/移动/计分机制可玩；放入 `.pmx` 并 **Refresh Library** 后自动换成 MMD 巨人（并跳舞）。
-- **操作**：单指拖动=移动；轻点 或 右下「踩踏」= 踩踏；双指捏合=缩放；左下「重新开始」= 重置。
-> Phase 2 的**完整玩法规格 `TASK_Phase2.md` 在仓库中不存在**（已排查工作区/历史/分支/远端）。当前实现基于
-> `docs/MMDGiantGame_Phase2_设计说明.md` 中**由实现 AI 自拟**的假设，若与你的预期不符请指出，我可再改。
+- **模块**：`Assets/Scripts/GiantCity/`（命名空间 `GiantCity`），只复用 Phase 1 的公共工具
+  （如 `MMDPlayer.MMDPhysicsGuard`）与 UMT，不改 Phase 1 实现、不动 UMT 包。
+- **关键设计**：**不放大女巨人**（放大会让 Bullet 刚体尺度爆炸、衣服乱飞），而是用
+  `WorldScaler` **把整个世界（城市+小人）缩小**，让玩家≈女巨人一根脚趾。女巨人保持 UMT 默认尺度。
+- **运行时导入**：`MobileModelPicker` 从 `persistentDataPath/MMDModels` 扫 `.pmx`，用
+  `PMXImporter` 分帧导入字节 + 同目录贴图（自定义 `loadTextures`）。**模型不打包进 App**。
+- **场景**：`Assets/Scenes/GiantCity.unity`，用 **Tools ▸ Giant City ▸ Build GiantCity Scene** 生成。
+- **构建**：Android / ARM64 / IL2CPP；Built-in RP；Active Input Handling 含 Old 或 Both。
+- **操作**：左半屏摇杆移动小人（推到边=奔跑）；右半屏拖动视角；HUD「换模型」「无敌」「重生」。
+> Phase 2 完整玩法详见 `Assets/README_Phase2.md`（含 Android 真机验证步骤与已知限制）。
 
 ---
 
