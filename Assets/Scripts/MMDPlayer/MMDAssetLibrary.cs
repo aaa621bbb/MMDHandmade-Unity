@@ -66,5 +66,45 @@ namespace MMDPlayer
             ModelEntry entry = GetEntryForModel(model);
             return entry != null ? entry.motions : null;
         }
+
+        /// <summary>Finds the entry for a project-relative source .pmx path, or null when not indexed.</summary>
+        public ModelEntry GetEntryBySourcePath(string sourcePath)
+        {
+            if (string.IsNullOrEmpty(sourcePath))
+            {
+                return null;
+            }
+
+            string normalized = NormalizePath(sourcePath);
+            for (int i = 0; i < entries.Count; ++i)
+            {
+                ModelEntry entry = entries[i];
+                if (entry == null)
+                {
+                    continue;
+                }
+                if (string.Equals(NormalizePath(entry.sourcePath), normalized, System.StringComparison.OrdinalIgnoreCase))
+                {
+                    return entry;
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>Returns a non-null, flattened list of all indexed model entries.</summary>
+        public IReadOnlyList<ModelEntry> GetEntries()
+        {
+            return entries;
+        }
+
+        private static string NormalizePath(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+            {
+                return string.Empty;
+            }
+            return path.Replace('\\', '/').TrimStart('/').ToLowerInvariant();
+        }
     }
 }

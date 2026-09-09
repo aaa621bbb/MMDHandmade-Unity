@@ -38,6 +38,26 @@ namespace MMDPlayer
         private bool _syncingSlider;
         private bool _subscribed;
 
+        // --- v2 controls ---
+        private static readonly float[] SpeedOptions = { 0.5f, 0.75f, 1f, 1.5f, 2f };
+        private Button _speedButton;
+        private Text _speedLabel;
+        private Text _frameText;
+        private OptionDropdown _cameraDropdown;
+        private Slider _yawSlider;
+        private Text _yawText;
+        private Text _fpsText;
+        private Button _screenshotButton;
+        private Button _stageButton;
+        private RectTransform _panelRT;
+        private RectTransform _toolbarRT;
+        private MMDOrbitCamera _orbitCamera;
+        private bool _stageMode;
+        private float _fpsAccum;
+        private int _fpsCount;
+        private int _lastScreenWidth;
+        private int _lastScreenHeight;
+
         private void Awake()
         {
             EnsureEventSystem();
@@ -54,6 +74,42 @@ namespace MMDPlayer
         private void Start()
         {
             ResolveController();
+
+            if (_orbitCamera == null)
+            {
+                _orbitCamera = FindObjectOfType<MMDOrbitCamera>();
+            }
+
+            RestorePreferences();
+
+            _lastScreenWidth = Screen.width;
+            _lastScreenHeight = Screen.height;
+            ApplySafeArea();
+        }
+
+        /// <summary>Restores the preferences saved by <see cref="MMDPlayerPreferences"/> from a previous session.</summary>
+        private void RestorePreferences()
+        {
+            if (_controller != null)
+            {
+                _controller.SetLoop(MMDPlayerPreferences.LoadLoop(_controller.loop));
+
+                float savedSpeed = MMDPlayerPreferences.LoadSpeed(_controller.PlaybackSpeed);
+                if (!Mathf.Approximately(savedSpeed, _controller.PlaybackSpeed))
+                {
+                    _controller.SetPlaybackSpeed(savedSpeed);
+                }
+                RefreshSpeedLabel();
+            }
+
+            if (_orbitCamera != null)
+            {
+                _orbitCamera.SetView((CameraView)MMDPlayerPreferences.LoadCameraView(0));
+            }
+
+            // Re-sync the loop/progress controls to the restored values.
+            RefreshPlaybackControls();
+            RefreshYawSlider();
         }
 
         private void OnDestroy()
@@ -63,6 +119,9 @@ namespace MMDPlayer
 
         private void Update()
         {
+            UpdateFps();
+            HandleSafeAreaChange();
+
             // Reset the "dragging" flag when the pointer is released so the display resumes tracking.
             if (_draggingProgress && Input.GetMouseButtonUp(0))
             {
@@ -75,6 +134,39 @@ namespace MMDPlayer
             }
 
             RefreshProgress();
+            RefreshFrameText();
+        }
+
+        private void UpdateFps()
+        {
+            if (_fpsText == null)
+            {
+                return;
+            }
+
+            _fpsAccum += Time.unscaledDeltaTime;
+            ++_fpsCount;
+            if (_fpsAccum >= 0.5f)
+            {
+                float fps = _fpsCount / _fpsAccum;
+                _fpsText.text = string.Format("{0:0} FPS", fps);
+                _fpsAccum = 0f;
+                _fpsCount = 0;
+            }
+        }
+
+        private void HandleSafeAreaChange()
+        {
+            // Only recompute the safe area when the screen actually changes size/orientation; otherwise the
+            // anchors stay put (and we avoid churn in the VerticalLayoutGroup).
+            if (_lastScreenWidth == Screen.width && _lastScreenHeight == Screen.height)
+            {
+                return;
+            }
+
+            _lastScreenWidth = Screen.width;
+            _lastScreenHeight = Screen.height;
+            ApplySafeArea();
         }
 
         // ---------------------------------------------------------------------
@@ -91,11 +183,19 @@ namespace MMDPlayer
                 Subscribe();
             }
 
+            if (_orbitCamera == null)
+            {
+                _orbitCamera = FindObjectOfType<MMDOrbitCamera>();
+            }
+
             PopulateModelDropdown();
             PopulateMotionDropdown();
             PopulateMorphDropdown();
+            PopulateCameraDropdown();
             RefreshPhysicsToggle();
             RefreshPlaybackControls();
+            RefreshSpeedLabel();
+            RefreshYawSlider();
             RefreshHeader();
         }
 
@@ -374,6 +474,188 @@ namespace MMDPlayer
         }
 
         // ---------------------------------------------------------------------
+        //  v2 controls: camera view, speed, frame step, yaw, tools
+        // ---------------------------------------------------------------------
+
+        private void PopulateCameraDropdown()
+        {
+            if (_cameraDropdown == null)
+            {
+                return;
+            }
+
+            string[] names =
+            {
+                "正面", "背面", "左侧", "右侧", "俯视", "斜视", "复位",
+            };
+            _cameraDropdown.SetOptions(names, (index) =>
+            {
+                MMDOrbitCamera cam = _orbitCamera != null ? _orbitCamera : FindObjectOfType<MMDOrbitCamera>();
+                if (cam == null || index < 0 || index >= names.Length)
+                {
+                    return;
+                }
+                cam.SetView((CameraView)index);
+                MMDPlayerPreferences.SaveCameraView(index);
+            });
+        }
+
+        private void RefreshSpeedLabel()
+        {
+            if (_speedLabel == null)
+            {
+                return;
+            }
+            float speed = _controller != null ? _controller.PlaybackSpeed : 1f;
+            _speedLabel.text = string.Format("速度 {0:0.##}x", speed);
+        }
+
+        private void OnSpeedCycle()
+        {
+            if (_controller == null)
+            {
+                return;
+            }
+
+            float current = _controller.PlaybackSpeed;
+            int index = 0;
+            for (int i = 0; i < SpeedOptions.Length; ++i)
+            {
+                if (Mathf.Approximately(SpeedOptions[i], current))
+                {
+                    index = i;
+                    break;
+                }
+            }
+
+            int next = (index + 1) % SpeedOptions.Length;
+            _controller.SetPlaybackSpeed(SpeedOptions[next]);
+            MMDPlayerPreferences.SaveSpeed(SpeedOptions[next]);
+            RefreshSpeedLabel();
+        }
+
+        private void OnStepFrame(int frames)
+        {
+            _controller?.StepFrame(frames);
+            RefreshFrameText();
+        }
+
+        private void RefreshFrameText()
+        {
+            if (_frameText == null || _controller == null)
+            {
+                return;
+            }
+            _frameText.text = string.Format("帧 {0}", _controller.CurrentFrame);
+        }
+
+        private void OnYawChanged(float value)
+        {
+            _controller?.SetModelYaw(value);
+            RefreshYawText();
+        }
+
+        private void RefreshYawSlider()
+        {
+            if (_yawSlider == null)
+            {
+                return;
+            }
+
+            float yaw = _controller != null ? _controller.ModelYaw : 0f;
+
+            if (!_syncingSlider)
+            {
+                _syncingSlider = true;
+                _yawSlider.value = yaw;
+                _syncingSlider = false;
+            }
+
+            RefreshYawText();
+        }
+
+        private void RefreshYawText()
+        {
+            if (_yawText == null)
+            {
+                return;
+            }
+            float yaw = _controller != null ? _controller.ModelYaw : 0f;
+            _yawText.text = string.Format("{0:0}°", yaw);
+        }
+
+        private void OnScreenshotClicked()
+        {
+            if (_statusText == null)
+            {
+                return;
+            }
+
+            try
+            {
+                string folder = System.IO.Path.Combine(Application.persistentDataPath, "MMDScreenshots");
+                System.IO.Directory.CreateDirectory(folder);
+                string path = System.IO.Path.Combine(folder, string.Format("shot_{0}.png", DateTime.Now.ToString("yyyyMMdd_HHmmss")));
+                ScreenCapture.CaptureScreenshot(path);
+                _statusText.text = "已截图：" + path;
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+                _statusText.text = "截图失败：" + e.Message;
+            }
+        }
+
+        private void OnStageToggle()
+        {
+            _stageMode = !_stageMode;
+            if (_panelRT != null)
+            {
+                _panelRT.gameObject.SetActive(!_stageMode);
+            }
+            if (_stageButton != null && _stageButton.GetComponentInChildren<Text>() != null)
+            {
+                _stageButton.GetComponentInChildren<Text>().text = _stageMode ? "显示界面" : "隐藏界面";
+            }
+        }
+
+        /// <summary>
+        /// Positions the bottom playback panel and the top toolbar to respect the device's safe area
+        /// (notches / rounded corners / gesture bars), so controls are never under a cut-out.
+        /// </summary>
+        private void ApplySafeArea()
+        {
+            Rect safe = Screen.safeArea;
+            float screenW = Mathf.Max(Screen.width, 1);
+            float screenH = Mathf.Max(Screen.height, 1);
+
+            float xMin = safe.xMin / screenW;
+            float xMax = safe.xMax / screenW;
+            float yMin = safe.yMin / screenH;
+            float yMax = safe.yMax / screenH;
+
+            // Bottom playback panel: floor it just above the bottom safe inset and span the safe width.
+            if (_panelRT != null)
+            {
+                _panelRT.anchorMin = new Vector2(xMin, yMin);
+                _panelRT.anchorMax = new Vector2(xMax, yMin);
+                _panelRT.pivot = new Vector2(0.5f, 0f);
+                _panelRT.offsetMin = new Vector2(0f, 0f);
+                _panelRT.offsetMax = new Vector2(0f, _panelRT.offsetMax.y);
+            }
+
+            // Top toolbar: move it just inside the top safe inset, at the safe right edge.
+            if (_toolbarRT != null)
+            {
+                _toolbarRT.anchorMin = new Vector2(xMax, yMax);
+                _toolbarRT.anchorMax = new Vector2(xMax, yMax);
+                _toolbarRT.pivot = new Vector2(1f, 1f);
+                _toolbarRT.offsetMin = new Vector2(-320f, -44f);
+                _toolbarRT.offsetMax = new Vector2(-12f, 0f);
+            }
+        }
+
+        // ---------------------------------------------------------------------
         //  Scene bootstrap helpers
         // ---------------------------------------------------------------------
 
@@ -422,7 +704,8 @@ namespace MMDPlayer
             panelRT.anchorMax = new Vector2(1f, 0f);
             panelRT.pivot = new Vector2(0.5f, 0f);
             panelRT.offsetMin = new Vector2(0f, 0f);
-            panelRT.offsetMax = new Vector2(0f, 312f);
+            panelRT.offsetMax = new Vector2(0f, 560f);
+            _panelRT = panelRT;
 
             Image panelImage = panelGO.AddComponent<Image>();
             panelImage.color = new Color(0.05f, 0.05f, 0.08f, 0.78f);
@@ -454,7 +737,11 @@ namespace MMDPlayer
             _pauseButton = UIHelper.CreateButton(transportRow, "Pause", "暂停", 88f, () => _controller?.Pause());
             _stopButton = UIHelper.CreateButton(transportRow, "Stop", "停止", 88f, () => _controller?.StopAndReset());
             _resetPoseButton = UIHelper.CreateButton(transportRow, "ResetPose", "重置姿势", 104f, () => _controller?.StopAndReset());
-            _loopToggle = UIHelper.CreateToggle(transportRow, "Loop", "循环", _controller != null && _controller.loop, (v) => _controller?.SetLoop(v));
+            _loopToggle = UIHelper.CreateToggle(transportRow, "Loop", "循环", _controller != null && _controller.loop, (v) =>
+            {
+                _controller?.SetLoop(v);
+                MMDPlayerPreferences.SaveLoop(v);
+            });
 
             // Progress.
             RectTransform progressRow = BuildRow(panelRT, new[] { ("进度", 60f), (null, 560f) });
@@ -463,16 +750,65 @@ namespace MMDPlayer
             _timeText = UIHelper.CreateText(progressRow, "Time", "00:00 / 00:00", 13, TextAnchor.MiddleLeft);
             UIHelper.MakeFixedWidth(_timeText.rectTransform, 130f);
 
+            // Speed + frame step.
+            RectTransform speedRow = BuildRow(panelRT, new[] { ("速度", 60f), (null, 560f) });
+            _speedButton = UIHelper.CreateButton(speedRow, "Speed", "速度 1x", 104f, OnSpeedCycle);
+            _speedLabel = _speedButton.GetComponentInChildren<Text>();
+            Button stepBack = UIHelper.CreateButton(speedRow, "StepBack", "-1帧", 64f, () => OnStepFrame(-1));
+            Button stepFwd = UIHelper.CreateButton(speedRow, "StepFwd", "+1帧", 64f, () => OnStepFrame(1));
+            _frameText = UIHelper.CreateText(speedRow, "Frame", "帧 0", 13, TextAnchor.MiddleLeft);
+            UIHelper.MakeFixedWidth(_frameText.rectTransform, 90f);
+
             // Physics.
             RectTransform physicsRow = BuildRow(panelRT, new[] { ("物理", 60f), (null, 560f) });
             _physicsToggle = UIHelper.CreateToggle(physicsRow, "Physics", "物理", true, (v) => _controller?.TogglePhysics(v));
             _physicsHint = UIHelper.CreateText(physicsRow, "PhysicsHint", string.Empty, 13, TextAnchor.MiddleLeft);
+
+            // Camera view presets.
+            RectTransform cameraRow = BuildRow(panelRT, new[] { ("视角", 60f), (null, 560f) });
+            _cameraDropdown = OptionDropdown.Create(cameraRow, "CameraDropdown", 200f);
+
+            // Model yaw (presentation rotation).
+            RectTransform yawRow = BuildRow(panelRT, new[] { ("旋转", 60f), (null, 560f) });
+            _yawSlider = UIHelper.CreateSlider(yawRow, "YawSlider", 0f, 360f, OnYawChanged);
+            _yawText = UIHelper.CreateText(yawRow, "YawText", "0°", 13, TextAnchor.MiddleLeft);
+            UIHelper.MakeFixedWidth(_yawText.rectTransform, 70f);
 
             // Morph.
             RectTransform morphRow = BuildRow(panelRT, new[] { ("表情", 60f), (null, 560f) });
             _morphRow = morphRow;
             _morphDropdown = OptionDropdown.Create(morphRow, "MorphDropdown", 400f);
             _morphRow.gameObject.SetActive(false);
+
+            BuildTopToolbar();
+        }
+
+        /// <summary>Builds the always-visible top-right toolbar (screenshot + stage toggle + FPS).</summary>
+        private void BuildTopToolbar()
+        {
+            GameObject toolbarGO = UIHelper.CreateRect("TopToolbar", transform);
+            RectTransform toolbarRT = toolbarGO.transform as RectTransform;
+            toolbarRT.anchorMin = new Vector2(1f, 1f);
+            toolbarRT.anchorMax = new Vector2(1f, 1f);
+            toolbarRT.pivot = new Vector2(1f, 1f);
+            toolbarRT.offsetMin = new Vector2(-320f, -44f);
+            toolbarRT.offsetMax = new Vector2(-12f, 0f);
+            _toolbarRT = toolbarRT;
+
+            UIHelper.MakePreferredHeight(toolbarRT, 44f);
+
+            HorizontalLayoutGroup hlg = toolbarGO.AddComponent<HorizontalLayoutGroup>();
+            hlg.spacing = 6f;
+            hlg.padding = new RectOffset(0, 0, 0, 0);
+            hlg.childControlWidth = true;
+            hlg.childControlHeight = true;
+            hlg.childForceExpandWidth = false;
+            hlg.childForceExpandHeight = true;
+
+            _screenshotButton = UIHelper.CreateButton(toolbarRT, "Screenshot", "截图", 76f, new System.Action(OnScreenshotClicked));
+            _stageButton = UIHelper.CreateButton(toolbarRT, "Stage", "隐藏界面", 96f, new System.Action(OnStageToggle));
+            _fpsText = UIHelper.CreateText(toolbarRT, "Fps", "60 FPS", 12, TextAnchor.MiddleRight);
+            UIHelper.MakeFixedWidth(_fpsText.rectTransform, 80f);
         }
 
         /// <summary>

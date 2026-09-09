@@ -45,6 +45,22 @@ namespace MMDPlayer
         [Tooltip("Uniform scale applied to the built model root.")]
         public float modelScale = 1f;
 
+        [Header("Playback")]
+        [Tooltip("Playback speed multiplier applied to the active motion (clamped 0.25x - 3x).")]
+        [Range(0.25f, 3f)] public float playbackSpeed = 1f;
+        [Tooltip("Frame rate used for frame-stepping and the on-screen frame counter (VMD is typically 30fps).")]
+        public int animationFps = 30;
+
+        [Header("Model Presentation")]
+        [Tooltip("Additional yaw (degrees) applied to the model root after load, for presenting the model.")]
+        [Range(0f, 360f)] public float modelYaw;
+        [Tooltip("Automatically run the shader fixer (replaces missing/error shaders) right after a model load.")]
+        public bool fixShadersOnLoad = true;
+        [Tooltip("Apply mobile-friendly runtime optimizations (frame rate cap, keep screen awake, lower mobile shadows).")]
+        public bool optimizeForMobile = true;
+        [Tooltip("Restore the last-edited model from PlayerPrefs when the app starts (no-op if none saved).")]
+        public bool autoLoadLastModel = true;
+
         [Header("Physics")]
         [Tooltip("Master toggle for live Bullet physics; overridden to off when MMDPhysicsGuard reports it is unavailable.")]
         public bool livePhysics = true;
@@ -85,6 +101,21 @@ namespace MMDPlayer
         public bool IsPaused => _isPaused;
         public bool IsPlaying => _currentClip != null && !_isPaused && _graphCreated;
 
+        public bool HasModel => _currentModel != null;
+        public bool HasClip => _currentClip != null;
+        public string ModelName => _currentModel != null ? _currentModel.name : string.Empty;
+        public string ClipName => _currentClip != null ? _currentClip.name : string.Empty;
+        public float FrameRate => animationFps > 0 ? animationFps : 30f;
+        public int CurrentFrame => Mathf.FloorToInt(CurrentTime * FrameRate);
+        public float ModelYaw => modelYaw;
+
+        /// <summary>Playback speed multiplier (clamped 0.25x - 3x). Setting it also updates the live playable.</summary>
+        public float PlaybackSpeed
+        {
+            get => playbackSpeed;
+            set => SetPlaybackSpeed(value);
+        }
+
         private void Awake()
         {
             if (modelAnchor == null)
@@ -97,11 +128,42 @@ namespace MMDPlayer
             {
                 livePhysics = false;
             }
+
+            if (optimizeForMobile)
+            {
+                MMDMobilePerformance.Apply();
+            }
+        }
+
+        private void Start()
+        {
+            TryAutoLoadLastModel();
         }
 
         private void OnDestroy()
         {
             DestroyGraph();
+        }
+
+        /// <summary>Loads the model that was active last time, if <see cref="autoLoadLastModel"/> is enabled.</summary>
+        private void TryAutoLoadLastModel()
+        {
+            if (!autoLoadLastModel || library == null)
+            {
+                return;
+            }
+
+            string path = MMDPlayerPreferences.LoadModelPath();
+            if (string.IsNullOrEmpty(path))
+            {
+                return;
+            }
+
+            bool loaded = LoadModelBySourcePath(path);
+            if (!loaded)
+            {
+                Debug.Log("[MMD Player] No saved model available to restore: " + path);
+            }
         }
 
         // ---------------------------------------------------------------------
@@ -175,6 +237,15 @@ namespace MMDPlayer
 
                 AlignModelToGround(_root.transform);
 
+                if (fixShadersOnLoad)
+                {
+                    int fixedCount = MMDShaderFixer.FixMaterials(_root);
+                    if (fixedCount > 0)
+                    {
+                        Debug.Log("[MMD Player] Fixed " + fixedCount + " material shader(s) on " + modelAsset.name);
+                    }
+                }
+
                 _currentMotions.Clear();
                 if (library != null)
                 {
@@ -190,6 +261,7 @@ namespace MMDPlayer
                     PlayMotion(_currentMotions[0]);
                 }
 
+                SaveCurrentModelPath();
                 OnModelLoaded?.Invoke();
             }
             catch (System.Runtime.InteropServices.DllNotFoundException e)
@@ -315,7 +387,7 @@ namespace MMDPlayer
 
             _clipPlayable = AnimationClipPlayable.Create(_graph, clip);
             _clipPlayable.SetLoop(loop);
-            _clipPlayable.SetSpeed(1f);
+            _clipPlayable.SetSpeed(playbackSpeed);
             _output.SetAnimationPlayable(_clipPlayable);
             _clipPlayable.Play();
             _graph.Play();
@@ -379,6 +451,120 @@ namespace MMDPlayer
             if (_clipPlayable.IsValid())
             {
                 _clipPlayable.SetLoop(on);
+            }
+        }
+
+        /// <summary>Sets the playback speed multiplier for the active motion (clamped 0.25x - 3x).</summary>
+        public void SetPlaybackSpeed(float speed)
+        {
+            playbackSpeed = Mathf.Clamp(speed, 0.25f, 3f);
+            if (_clipPlayable.IsValid())
+            {
+                _clipPlayable.SetSpeed(playbackSpeed);
+            }
+        }
+
+        /// <summary>Steps the current motion forward (+) or backward (-) by the given number of frames.</summary>
+        public void StepFrame(int frames)
+        {
+            if (!_clipPlayable.IsValid() || _currentDuration <= 0f)
+            {
+                return;
+            }
+            SetTime(CurrentTime + frames * (1f / FrameRate));
+        }
+
+        /// <summary>Convenience toggle: resumes if paused, otherwise pauses the current motion.</summary>
+        public void PlayPauseToggle()
+        {
+            if (!HasClip)
+            {
+                return;
+            }
+            if (_isPaused)
+            {
+                Resume();
+            }
+            else
+            {
+                Pause();
+            }
+        }
+
+        /// <summary>Rewinds the current motion to the start and resumes it (does not change the loop setting).</summary>
+        public void RestartClip()
+        {
+            if (!HasClip)
+            {
+                return;
+            }
+            SetTime(0f);
+            _isPaused = false;
+            if (_clipPlayable.IsValid())
+            {
+                _clipPlayable.Play();
+            }
+        }
+
+        /// <summary>Returns the world-space bounds of the loaded model, or a unit bounds around the anchor.</summary>
+        public Bounds GetModelBounds()
+        {
+            return _root != null ? ComputeWorldBounds(_root.transform) : new Bounds(transform.position, Vector3.one);
+        }
+
+        /// <summary>Sets the additional yaw (degrees) applied to the model root for presentation.</summary>
+        public void SetModelYaw(float yaw)
+        {
+            modelYaw = Mathf.Repeat(yaw, 360f);
+            ApplyModelRotation();
+        }
+
+        /// <summary>Rotates the model root by the given delta (degrees) around its local Y axis.</summary>
+        public void RotateModel(float deltaYaw)
+        {
+            SetModelYaw(modelYaw + deltaYaw);
+        }
+
+        /// <summary>Runs the shader fixer over the loaded model immediately (also runs automatically on load).</summary>
+        public void FixModelShaders()
+        {
+            if (_root != null)
+            {
+                MMDShaderFixer.FixMaterials(_root);
+            }
+        }
+
+        /// <summary>
+        /// Loads a model by its project-relative source .pmx path (see <see cref="MMDAssetLibrary.sourcePath"/>).
+        /// Returns true when the library contains that model and it was loaded.
+        /// </summary>
+        public bool LoadModelBySourcePath(string sourcePath)
+        {
+            if (library == null)
+            {
+                return false;
+            }
+            MMDAssetLibrary.ModelEntry entry = library.GetEntryBySourcePath(sourcePath);
+            if (entry == null || entry.model == null)
+            {
+                return false;
+            }
+            LoadModel(entry.model);
+            return true;
+        }
+
+        /// <summary>Stores the current model's source path so the next launch can restore it.</summary>
+        private void SaveCurrentModelPath()
+        {
+            if (library == null || _currentModel == null)
+            {
+                return;
+            }
+
+            MMDAssetLibrary.ModelEntry entry = library.GetEntryForModel(_currentModel);
+            if (entry != null && !string.IsNullOrEmpty(entry.sourcePath))
+            {
+                MMDPlayerPreferences.SaveModelPath(entry.sourcePath);
             }
         }
 
@@ -561,7 +747,7 @@ namespace MMDPlayer
                 return;
             }
 
-            root.localRotation = Quaternion.Euler(modelRotationOffset);
+            root.localRotation = Quaternion.Euler(modelRotationOffset) * Quaternion.Euler(0f, modelYaw, 0f);
             root.localScale = Vector3.one * modelScale;
             root.localPosition = modelPositionOffset;
 
@@ -572,6 +758,16 @@ namespace MMDPlayer
                 position.y -= bounds.min.y; // lift the lowest point to y = 0
                 root.position = position;
             }
+        }
+
+        /// <summary>Applies the model yaw to the built root, preserving the manual rotation offset.</summary>
+        private void ApplyModelRotation()
+        {
+            if (_root == null)
+            {
+                return;
+            }
+            _root.transform.localRotation = Quaternion.Euler(modelRotationOffset) * Quaternion.Euler(0f, modelYaw, 0f);
         }
 
         private static Bounds ComputeWorldBounds(Transform root)

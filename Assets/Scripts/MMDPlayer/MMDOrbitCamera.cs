@@ -2,10 +2,23 @@ using UnityEngine;
 
 namespace MMDPlayer
 {
+    /// <summary>Named camera viewpoints for the orbit camera; used by the UI's view presets.</summary>
+    public enum CameraView
+    {
+        Front = 0,
+        Back = 1,
+        Left = 2,
+        Right = 3,
+        Top = 4,
+        ThreeQuarter = 5,
+        Reset = 6,
+    }
+
     /// <summary>
     /// Orbit camera for the MMD player. Left-drag orbits, scroll-wheel zooms, right/middle-drag pans,
-    /// and double-click resets the view. Automatically follows the loaded model (it listens to the
-    /// controller's <see cref="MMDPlayerController.OnModelLoaded"/> event and frames the model bounds).
+    /// and double-click resets the view. On mobile a single finger orbits and two-finger pinch zooms.
+    /// Automatically follows the loaded model (it listens to the controller's
+    /// <see cref="MMDPlayerController.OnModelLoaded"/> event and frames the model bounds).
     /// </summary>
     [DisallowMultipleComponent]
     public sealed class MMDOrbitCamera : MonoBehaviour
@@ -30,6 +43,11 @@ namespace MMDPlayer
         public float panSpeed = 0.5f;
         [Tooltip("Downward tilt (degrees) applied when focusing a model.")]
         public float focusPitch = 15f;
+        [Tooltip("When enabled, the camera keeps re-framing the target if it moves (e.g. auto-follow after load).")]
+        public bool followTarget = true;
+
+        // --- mobile multi-touch pinch-zoom state ---
+        private float _lastPinchDistance;
 
         private Vector3 _lastMousePosition;
         private float _lastClickTime;
@@ -75,6 +93,17 @@ namespace MMDPlayer
 
         private void HandleInput()
         {
+            // Mobile pinch-to-zoom (two fingers). When pinching we skip the single-finger orbit/pan so the
+            // two gestures never fight each other.
+            if (Input.touchCount >= 2)
+            {
+                HandlePinchZoom();
+                return;
+            }
+
+            // Not pinching: reset the pinch baseline so the next pinch starts fresh.
+            _lastPinchDistance = 0f;
+
             // Double-click to reset.
             if (Input.GetMouseButtonDown(0))
             {
@@ -131,6 +160,75 @@ namespace MMDPlayer
             focusOffset += up * (screenDelta.y * scale * panSpeed);
         }
 
+        /// <summary>Two-finger pinch-zoom: the distance between the fingers scales the camera distance.</summary>
+        private void HandlePinchZoom()
+        {
+            Touch a = Input.GetTouch(0);
+            Touch b = Input.GetTouch(1);
+
+            float currentDistance = Vector2.Distance(a.position, b.position);
+            if (currentDistance <= 0.0001f)
+            {
+                return;
+            }
+
+            if (_lastPinchDistance > 0.0001f)
+            {
+                float delta = currentDistance - _lastPinchDistance;
+                distance = Mathf.Clamp(distance * (1f - delta * zoomSpeed * 0.02f), minDistance, maxDistance);
+                ApplyTransform();
+            }
+
+            _lastPinchDistance = currentDistance;
+        }
+
+        /// <summary>Switches to a named camera viewpoint, framing the current target if one is set.</summary>
+        public void SetView(CameraView view)
+        {
+            if (view == CameraView.Reset)
+            {
+                ResetView();
+                return;
+            }
+
+            (float pitch, float yaw) = GetViewAngles(view);
+
+            // When we have a valid target, re-center the focus on the model's bounds height so the
+            // chosen viewpoint actually frames the model.
+            if (target != null)
+            {
+                Bounds bounds = ComputeBounds(target);
+                if (bounds.extents.sqrMagnitude > 0.0001f)
+                {
+                    focusOffset = new Vector3(0f, bounds.center.y - target.position.y, 0f);
+                }
+            }
+
+            orbitAngles = new Vector2(pitch, yaw);
+            ApplyTransform();
+        }
+
+        private static (float pitch, float yaw) GetViewAngles(CameraView view)
+        {
+            switch (view)
+            {
+                case CameraView.Back: return (15f, 180f);
+                case CameraView.Left: return (15f, -90f);
+                case CameraView.Right: return (15f, 90f);
+                case CameraView.Top: return (88f, 0f);
+                case CameraView.ThreeQuarter: return (18f, 35f);
+                case CameraView.Front:
+                default:
+                    return (15f, 0f);
+            }
+        }
+
+        /// <summary>Sets the orbit distance directly, clamped to the configured range.</summary>
+        public void SetZoom(float value)
+        {
+            distance = Mathf.Clamp(value, minDistance, maxDistance);
+        }
+
         private void ApplyTransform()
         {
             Quaternion rotation = Quaternion.Euler(orbitAngles.x, orbitAngles.y, 0f);
@@ -185,6 +283,11 @@ namespace MMDPlayer
 
         private void OnModelLoaded()
         {
+            if (!followTarget)
+            {
+                return;
+            }
+
             MMDPlayerController controller = FindObjectOfType<MMDPlayerController>();
             if (controller == null)
             {

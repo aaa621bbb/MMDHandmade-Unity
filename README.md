@@ -4,6 +4,10 @@
 把任意 `.pmx` 模型 + `.vmd` 动作丢进 `Assets/MMDResources/`，即可在场景里加载、播放（含 VMD 骨骼动画）、
 Bullet 裙摆物理、表情/morph 切换、进度拖拽与环绕相机。
 
+面向**手机游戏**，v2 已加入一系列适合移动端播放/展示的能力：播放倍速、逐帧步进、环绕相机预设视角、
+双指捏合缩放、模型自转（yaw）、截图保存、隐藏界面（舞台模式）、FPS 显示、刘海/圆角安全区适配、
+断点续用上次模型、着色器缺失兜底、以及移动端性能优化（锁帧、防休眠、降阴影）。
+
 > **渲染管线**：Built-in RP（工程无 URP asset，升级时请保持 Built-in，不要被切成 URP）。
 > **编辑器版本**：用户的 **Unity 6.6**（详见下文“首次使用”）。
 
@@ -52,14 +56,21 @@ Bullet 裙摆物理、表情/morph 切换、进度拖拽与环绕相机。
 
 | 操作 | 方式 |
 |---|---|
-| 播放 / 暂停 / 停止 | 底部面板「播放」「暂停」「停止」按钮 |
-| 循环 | 「循环」开关 |
+| 播放 / 暂停 / 停止 | 底部面板「播放」「暂停」「停止」按钮（「暂停」后按「播放」继续，「停止」回到 bind pose） |
+| 循环 | 「循环」开关（记忆上次设置） |
 | 拖进度 / 跳转 | 进度条拖动（联动 `当前秒/总秒` 文本） |
+| 播放倍速 | 「速度」按钮循环切换 `0.5x / 0.75x / 1x / 1.5x / 2x`（记忆上次设置） |
+| 逐帧步进 | 「-1帧」/「+1帧」按钮；右侧显示当前帧号（按 `animationFps` 计，默认 30） |
 | 物理开关 | 「物理」开关；本平台无 Bullet 原生库时置灰并提示（见 §5 已知限制） |
 | 表情 morph | 「表情」下拉选择 morph，权重固定为 1（含 morph 的模型才显示该行） |
-| 重置姿势 | 「重置姿势」按钮（回到 bind pose） |
-| 相机环绕 | 左键拖拽 = 环绕；滚轮 = 推拉；右键/中键拖拽 = 平移；**双击 = 复位** |
-| 相机对焦模型 | 加载模型后相机自动摆到「看整体」机位（脚贴地、俯 ~15°） |
+| 模型自转 | 「旋转」滑块 0–360° 让模型绕自身 Y 轴转动（便于展示、拍照） |
+| 相机视角 | 「视角」下拉：正面 / 背面 / 左侧 / 右侧 / 俯视 / 斜视 / 复位 |
+| 相机环绕 | 左键拖拽 / 单指拖动 = 环绕；滚轮 / 双指捏合 = 推拉；右键/中键拖拽 = 平移；**双击 = 复位** |
+| 截图 | 右上「截图」：保存到 `Application.persistentDataPath/MMDScreenshots/`（Android 需用系统分享/相册另存） |
+| 隐藏界面 | 右上「隐藏界面」切换为纯净舞台模式（再点「显示界面」恢复） |
+| FPS | 右上角实时显示（半秒刷新一次） |
+| 相机对焦模型 | 加载模型后相机自动摆到「看整体」机位（脚贴地、俯 ~15°）；`followTarget` 控制是否自动对焦 |
+| 断点续用 | `autoLoadLastModel` 开启时，启动自动加载上次模型；速度/循环/视角跨会话记忆 |
 
 ---
 
@@ -77,9 +88,12 @@ Assets/
     MMDPlayer/
       MMDPlayerController.cs   总控：加载 PMX、驱动播放、物理/表情/进度
       MMDPlaybackUI.cs         uGUI 播放面板（纯转发，逻辑都在 Controller）
-      MMDOrbitCamera.cs        环绕相机（环绕/缩放/平移/复位/自动对焦）
+      MMDOrbitCamera.cs        环绕相机（环绕/缩放/平移/预设视角/自动对焦/双指捏合）
       MMDPhysicsGuard.cs       平台物理可用性判定（优雅降级）
       MMDAssetLibrary.cs       ScriptableObject 资产索引（模型↔动作）
+      MMDShaderFixer.cs        材质着色器缺失/报错时的兜底替换（避免粉红模型）
+      MMDMobilePerformance.cs  移动端性能：锁帧、防休眠、降阴影（可控开关）
+      MMDPlayerPreferences.cs  PlayerPrefs 断点续用：上次模型/速度/循环/视角
       Editor/
         MMDResourcesScanner.cs  编辑器扫描器：扫 Models/Motions、转 VMD→Clip、写库
         MMDSandboxBuilder.cs    一键生成 MMDSandbox 场景
@@ -106,8 +120,10 @@ Assets/
 - **当前根 `manifest.json` 已去掉 `com.unity.animation.rigging`**：UMT 的人形 Avatar 由
   `PMXAvatarBuilder` 用 `AvatarBuilder` 直接构建，不依赖该包；去掉它可减少 6.6 下的依赖风险。
   若你希望保留人形 Avatar 的额外功能，可自行加回，不影响本播放器编译。
-- **启用物理时会把帧率锁到 60**：UMT 的 `MMDTransformManager` 在 `livePhysics=true` 时设置
-  `Application.targetFrameRate = 60`。关闭物理后请留意帧率是否恢复正常（可在 Project Settings 里手动调整）。
+- **帧率上限**：控制器在 `Awake` 中调用 `MMDMobilePerformance.Apply()`（受 `optimizeForMobile` 控制，默认开），
+  会把 `Application.targetFrameRate` 设为 60 并关闭屏幕休眠；在 Android/iOS 上还会关阴影、降 MSAA。
+  你在做游戏时如需自行管理质量，请把 `optimizeForMobile` 关掉。另外 UMT 的 `MMDTransformManager` 在
+  `livePhysics=true` 时也会设 `targetFrameRate = 60`——关闭物理后请留意帧率是否恢复。
 - **旧输入（Input Manager）**：UI 与相机用的是旧输入（`Input`/`StandaloneInputModule`）。
   若你把 Active Input Handling 设为「仅新 Input System」，需改为「两者」或「旧 Input Manager」，
   否则事件与相机鼠标操作不生效。
