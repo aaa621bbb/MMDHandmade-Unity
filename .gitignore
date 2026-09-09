@@ -1,0 +1,8 @@
+# Unity 生成的缓存与中间产物
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+
+# IDE 工程文件（由 Unity 重新生成）
+*.csproj
+*.sln
